@@ -2,6 +2,7 @@ import sys
 import yfinance as yf
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout,
                                QWidget, QComboBox, QLabel, QMessageBox, QHBoxLayout, QFrame)
 from PySide6.QtCore import Qt, QTimer
@@ -142,6 +143,8 @@ class StockRSIPlotter(QMainWindow):
             data['EMA_RSI'] = calculate_ema(data['RSI'])
 
             weekly_data = data['Close'].resample('W').last()
+            weekly_data_ema21 = calculate_ema(weekly_data,21)
+            weekly_data_ema50 = calculate_ema(weekly_data,50)
             weekly_rsi = calculate_rsi(weekly_data)
             weekly_rsi_ema = calculate_ema(weekly_rsi)
 
@@ -153,10 +156,13 @@ class StockRSIPlotter(QMainWindow):
             fig.tight_layout(pad=3.0)
 
             # Plotting logic (same as before)...
-            ax1.plot(data.index, data['Close'], label='Daily Close Price', color='black')
+            ax1.plot(weekly_data.index, weekly_data, label='Weekly Close Price', color='black')
+            # ax1.plot(weekly_data_ema21.index, weekly_data_ema21, label='21 EMA', color='green')
+            ax1.plot(weekly_data_ema50.index, weekly_data_ema50, label='50 EMA', color='red')
+            # ax1.plot(data.index, data['Close'], label='Daily Close Price', color='black')
             ax1.grid()
             ax1.margins(x=0.1, y=0.5)
-            ax1.set_title(f'{ticker} Daily Close Price')
+            ax1.set_title(f'{ticker} Weekly Close Price')
             ax1.set_ylabel('Price')
             ax1.legend()
 
@@ -180,7 +186,7 @@ class StockRSIPlotter(QMainWindow):
             ax3.set_ylabel('RSI')
             ax3.legend()
 
-            monthly_line, = ax4.plot(monthly_data.index, monthly_rsi, label='Monthly RSI', color='purple')
+            monthly_line, = ax4.plot(monthly_data.index, monthly_rsi, label='Monthly RSI', color='red')
             ax4.plot(monthly_data.index, monthly_rsi_ema, label='EMA over RSI', color='black')
             ax4.margins(x=0.1, y=0.5)
             ax4.axhline(40, color='red', linestyle='--')
@@ -200,6 +206,35 @@ class StockRSIPlotter(QMainWindow):
                                         arrowprops=dict(arrowstyle="->"))
             weekly_annot.set_visible(False)
 
+            monthly_annot = ax4.annotate("", xy=(0, 0), xytext=(20, 20),
+                                         textcoords="offset points",
+                                         bbox=dict(boxstyle="round", fc="w"),
+                                         arrowprops=dict(arrowstyle="->"))
+            monthly_annot.set_visible(False)
+
+            # Add annotation for ax1 (Weekly Close Price)
+            price_annot = ax1.annotate("", xy=(0, 0), xytext=(20, 20),
+                                       textcoords="offset points",
+                                       bbox=dict(boxstyle="round", fc="w"),
+                                       arrowprops=dict(arrowstyle="->"))
+            price_annot.set_visible(False)
+
+            def update_price_annot(ind):
+                # if not ind["ind"]:
+                #     return
+                x = weekly_data.index.to_numpy()
+                y = weekly_data.values
+                idx = ind["ind"][0]
+                price_annot.xy = (x[idx], y[idx])
+                date_str = pd.to_datetime(x[idx]).strftime('%d-%m-%Y')
+                val = y[idx]
+                if isinstance(val, (np.ndarray, pd.Series)):
+                    val = float(val)
+                text = f"{date_str}\nPrice: {val:.2f}"
+                price_annot.set_text(text)
+                price_annot.get_bbox_patch().set_facecolor("yellow")
+                price_annot.get_bbox_patch().set_alpha(0.8)
+
             def update_weekly_annot(ind):
                 x, y = weekly_line.get_data()
                 weekly_annot.xy = (x[ind["ind"][0]], y[ind["ind"][0]])
@@ -208,12 +243,6 @@ class StockRSIPlotter(QMainWindow):
                 weekly_annot.set_text(text)
                 weekly_annot.get_bbox_patch().set_facecolor("yellow")
                 weekly_annot.get_bbox_patch().set_alpha(0.8)
-
-            monthly_annot = ax4.annotate("", xy=(0, 0), xytext=(20, 20),
-                                         textcoords="offset points",
-                                         bbox=dict(boxstyle="round", fc="w"),
-                                         arrowprops=dict(arrowstyle="->"))
-            monthly_annot.set_visible(False)
 
             def update_monthly_annot(ind):
                 x, y = monthly_line.get_data()
@@ -225,9 +254,19 @@ class StockRSIPlotter(QMainWindow):
                 monthly_annot.get_bbox_patch().set_alpha(0.8)
 
             def hover(event):
+                vis_price = price_annot.get_visible()
                 vis_weekly = weekly_annot.get_visible()
                 vis_monthly = monthly_annot.get_visible()
-                if event.inaxes == ax3:
+                if event.inaxes == ax1:
+                    cont, ind = ax1.lines[0].contains(event)
+                    if cont:
+                        update_price_annot(ind)
+                        price_annot.set_visible(True)
+                        fig.canvas.draw_idle()
+                    elif vis_price:
+                        price_annot.set_visible(False)
+                        fig.canvas.draw_idle()
+                elif event.inaxes == ax3:
                     cont, ind = weekly_line.contains(event)
                     if cont:
                         update_weekly_annot(ind)
