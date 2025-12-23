@@ -1,0 +1,7 @@
+nsetools
+streamlit
+yfinance
+tqdm
+pandas
+nsepython
+plotly
