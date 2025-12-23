@@ -5,3 +5,4 @@ tqdm
 pandas
 nsepython
 plotly
+openpyxl
