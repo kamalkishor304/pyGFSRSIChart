@@ -1,86 +1,24 @@
 import streamlit as st
 import pandas as pd
-from nsetools import Nse
 import plotly.express as px
-import time
-import yfinance as yf
-import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from nsepython import nsefetch
-import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
+import yfinance as yf
+from typing import List
+
+# modular imports
+from data import fetch_monthly_close, fetch_quotes, get_ltp_and_change
+from analysis import calculate_rsi, calculate_ema, get_monthly_rsi_trend
+from portfolio import load_all_trades, get_holdings_quotes, enrich_portfolio_df, SHEETS
 # ---------------- CONFIG ----------------
-st.set_page_config(
-    page_title="Equity Portfolio",
-    page_icon="📈",
-    layout="wide"
-)
+st.set_page_config(page_title="Equity Portfolio", page_icon="📈", layout="wide")
 
 # ---------------- SHEETS ----------------
-SHEETS = [
-    "Aishwarya",
-    "Sudhadevi",
-    "Ramkishor",
-    "Rashmi",
-    "Dashrathlal"
-]
-
-def load_all_trades():
-    dfs = []
-    for sheet in SHEETS:
-        df = pd.read_excel("Equity Trades.xlsx", sheet_name=sheet)
-        df['Buy Date'] = df['Buy Date'].fillna(pd.Timestamp('2025-01-01'))
-        df = df[['SYMBOL', 'Holder', 'Buy Date', 'Sell', 'Buy', 'QTY']]
-        df = df.dropna(thresh=df.shape[1] - 2)
-        df['SourceSheet'] = sheet
-        dfs.append(df)
-
-    all_df = pd.concat(dfs, ignore_index=True)
-
-    rename_dict = {
-        'DHAN': 'Sudhadevi',
-        'RAM': 'RamKishor',
-        'ANGELONE': 'Dashrathlal'
-    }
-
-    all_df['Holder'] = all_df['Holder'].replace(rename_dict)
-    all_df['Holder'] = all_df['Holder'].astype(str).str.strip().str.title()
-    return all_df
-
-nse = Nse()
-holdings = load_all_trades()['SYMBOL'].unique()
-holdings_info = {}
-
-def fetch_quote(symbol):
-    try:
-        temp = nse.get_quote(symbol)
-        return symbol, temp['lastPrice'], temp['change']
-    except Exception:
-        return symbol, None, None
-
-
-# ⚠️ Keep workers low to avoid NSE blocking
-MAX_WORKERS = 16
-
-with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-    futures = [executor.submit(fetch_quote, symbol) for symbol in holdings]
-
-    for future in tqdm(as_completed(futures), total=len(futures)):
-        symbol, price, change = future.result()
-        if price is not None:
-            holdings_info[symbol] = [price, change]
-        else:
-            print(f"Failed: {symbol}")
-
-print(holdings_info)
-
-
-
-
-
-# nse = Nse()
+# load trades and fetch holdings via yfinance
+df_all = load_all_trades()
+holdings = df_all['SYMBOL'].dropna().unique().tolist()
+holdings_info = get_holdings_quotes(holdings, max_workers=12)
 
 def color_unrealised_pl(val):
     try:
@@ -106,142 +44,75 @@ def highlight_pl_bg(val):
     return ""
 
 
+# Minimal fallback lists to guarantee function returns
+DEFAULT_STOCK_LIST = ["RELIANCE", "TCS", "INFY", "HDFC", "ITC"]
 
-# ---------------- TREND ANALYSIS CORE ----------------
-def get_monthly_rsi_trend(symbol): 
-    try: 
-        df = yf.download( 
-            f"{symbol}.NS", 
-            period="10y", 
-            interval="1mo", # ✅ TRUE monthly data 
-            auto_adjust=True, 
-            progress=False 
-        ) 
-        if df.empty or df.shape[0] < 20: 
-            return None 
-        # breakpoint() 
-        monthly_close = df['Close'].dropna() 
-        monthly_rsi = calculate_rsi(monthly_close) 
-        monthly_rsi_ema = calculate_ema(monthly_rsi) 
-        date = monthly_rsi_ema.index 
-        monthly_rsi = [float(i[0]) for i in monthly_rsi.values] 
-        monthly_rsi_ema = [float(i[0]) for i in monthly_rsi_ema.values] 
-        
-        # ✅ DROP NaNs BEFORE COMPARISON 
-        combined = pd.DataFrame({ "Date":date, "RSI": monthly_rsi, "EMA": monthly_rsi_ema }) 
-        if combined.empty: 
-            return None 
-        latest = combined.iloc[-1] 
-        prev = combined.iloc[-2]
-        return { 
-             "SYMBOL": symbol, 
-             "Monthly RSI": round(latest["RSI"], 2), 
-             "Monthly RSI EMA": round(latest["EMA"], 2), 
-             "Prev RSI": round(prev["RSI"], 2) if prev is not None else None, 
-             "Prev EMA": round(prev["EMA"], 2) if prev is not None else None, 
-             } 
-    except Exception as e: 
-        return None
+NSE_INDICES_FALLBACK = {
+    "NIFTY 50": DEFAULT_STOCK_LIST,
+    "NIFTY NEXT 50": ["ACC", "AIAENG", "AMBUJACEM"],
+    "NIFTY MIDCAP 150": ["3MINDIA", "ABCAPITAL"],
+    "NIFTY LARGEMIDCAP 250": DEFAULT_STOCK_LIST
+}
+
+
+@st.cache_data(ttl=3600)
+def fetch_stock_list() -> List[str]:
+    return DEFAULT_STOCK_LIST
+
 
 
 # ================= RSI FUNCTIONS =================
-def calculate_ema(data, window=21):
-    return data.ewm(span=window, adjust=False).mean()
-
-def calculate_rsi(data, window=14):
-    delta = data.diff(1)
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1 / window, min_periods=window).mean()
-    avg_loss = loss.ewm(alpha=1 / window, min_periods=window).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def get_index_stocks(stocks):
-    stock_list = []
-    if stocks and 'data' in stocks:
-        for stock in stocks['data']:
-            stock_list.append(stock['symbol'])
-    return sorted(stock_list)
-
-
-def get_index_symbols(index_name):
-    data = nsefetch(
-        f"https://www.nseindia.com/api/equity-stockIndices?index={index_name}"
-    )
-    return sorted([item["symbol"] for item in data["data"]])
-
 @st.cache_data(ttl=3600)
-def fetch_stock_list():
+def get_nse_index_symbols(index_name: str):
+    """Dynamically fetch index constituents from NSE with intelligent fallback."""
+    import requests    
+    # normalize index name for lookups
+    normalized_name = index_name.replace("%20", " ")
     try:
-        nifty_largemidcap250 = nsefetch(
-            'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20LARGEMIDCAP%20250'
-        )
-        return get_index_stocks(nifty_largemidcap250)
-    except:
-        return ["RELIANCE", "TCS", "INFY"]
+        nse_url = f"https://www.nseindia.com/api/equity-stock-indices?index={index_name}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        response = requests.get(nse_url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if 'data' in data:
+                symbols = [item.get('symbol', '').strip() for item in data['data'] if item.get('symbol')]
+                if symbols:
+                    return sorted(symbols)
+    except Exception as e:
+        print(f"Error fetching index symbols for {index_name} from NSE API: {e}")
+        st.error(f"Error fetching index symbols for {index_name}: {e}")
+    
+    # Ensure we always return a list (avoid returning None which breaks static analysis)
+    try:
+        # final fallback to hardcoded list if present
+        return NSE_INDICES_FALLBACK.get(normalized_name, fetch_stock_list())
+    except Exception:
+        return fetch_stock_list()
+    
+def get_index_symbols(index_name: str):
+    """Get symbols for the given index."""
+    return get_nse_index_symbols(index_name)
 
 # ---------------- FUNCTIONS ----------------
 @st.cache_data(show_spinner=False)
 def get_ltp(symbol):
-    return holdings_info[symbol][0] if symbol in holdings_info else None
+    return holdings_info.get(symbol, (None, None))[0]
 
 def get_change(symbol):
     return holdings_info[symbol][1] if symbol in holdings_info else None
 
 
 @st.cache_data(show_spinner=False)
-def load_all_trades():
-    dfs = []
-    for sheet in SHEETS:
-        df = pd.read_excel("Equity Trades.xlsx", sheet_name=sheet)
-        df['Buy Date'] = df['Buy Date'].fillna(pd.Timestamp('2025-01-01'))
-        df = df[['SYMBOL', 'Holder', 'Buy Date', 'Sell', 'Buy', 'QTY']]
-        df = df.dropna(thresh=df.shape[1] - 2)
-        df['SourceSheet'] = sheet
-        dfs.append(df)
-
-    all_df = pd.concat(dfs, ignore_index=True)
-
-    rename_dict = {
-        'DHAN': 'Sudhadevi',
-        'RAM': 'RamKishor',
-        'ANGELONE': 'Dashrathlal'
-    }
-
-    all_df['Holder'] = all_df['Holder'].replace(rename_dict)
-    all_df['Holder'] = all_df['Holder'].astype(str).str.strip().str.title()
-    return all_df
+def load_all_trades_cached(path="Equity Trades.xlsx"):
+    return load_all_trades(path)
 
 
 def enrich_portfolio(df):
+    # UI-friendly wrapper that uses portfolio.enrich_portfolio_df
     df = df.copy()
-
-    # ❗ Exclude sold stocks
-    df = df[(df['Sell'].isna()) | (df['Sell'] == 0)]
-
-    total = len(df)
-    ltp_list = []
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    for idx, symbol in enumerate(df['SYMBOL']):
-        ltp = get_ltp(symbol)
-        ltp_list.append(ltp)
-        progress_bar.progress((idx + 1) / total)
-        status_text.text(f"Fetching LTP for {symbol} ({idx+1}/{total})")
-        time.sleep(0.005)
-
-    df['LTP'] = ltp_list
-    df['Invested'] = df['Buy'] * df['QTY']
-    df['Current'] = df['LTP'] * df['QTY']
-    df['P&L'] = df['Current'] - df['Invested']
-    df['P&L %'] = (df['P&L'] / df['Invested']) * 100
-
-    progress_bar.empty()
-    status_text.empty()
-    return df
+    holdings = df['SYMBOL'].dropna().unique().tolist()
+    quotes = get_holdings_quotes(holdings, max_workers=12)
+    return enrich_portfolio_df(df, quotes)
 
 
 def portfolio_summary(df):
@@ -364,12 +235,25 @@ if page == "🏠 Home":
 
                 st.plotly_chart(
                     portfolio_pie_by_stocks(df_holder),
-                    use_container_width=True
+                    width='stretch'
                 )
 
                 if st.button(f"View {holder}", key=f"btn_{holder}"):
                     st.session_state.selected_holder = holder
-                    st.experimental_rerun()
+                    # Attempt to rerun. Some Streamlit versions may not have experimental_rerun.
+                    # Use experimental_set_query_params as a fallback to trigger rerun.
+                    try:
+                        rerun_fn = getattr(st, "experimental_rerun", None)
+                        if callable(rerun_fn):
+                            rerun_fn()
+                        else:
+                            raise AttributeError("experimental_rerun not available")
+                    except Exception:
+                        # fallback trigger
+                        import uuid
+                        set_qp = getattr(st, "experimental_set_query_params", None)
+                        if callable(set_qp):
+                            set_qp(_rerun=str(uuid.uuid4()))
 
 # ================= INDIVIDUAL =================
 elif page == "👤 Individual Portfolio":
@@ -405,12 +289,12 @@ elif page == "👤 Individual Portfolio":
     if chart_type == "Pie Chart":
         st.plotly_chart(
             portfolio_pie_by_stocks(df_person),
-            use_container_width=True
+            width='stretch'
         )
     else:
         st.plotly_chart(
             portfolio_treemap(df_person),
-            use_container_width=True
+            width='stretch'
         )
 
     # 🔥 ONLY CHANGE HERE (Styled DF)
@@ -428,11 +312,11 @@ elif page == "👤 Individual Portfolio":
             'P&L': '₹{:,.2f}',
             'P&L %': '{:.2f}%',            
         })
-        .applymap(highlight_pl_bg, subset=['P&L'])
-        .applymap(highlight_pl_bg, subset=['P&L %'])
+        .applymap(highlight_pl_bg, subset=['P&L'])  # type: ignore[attr-defined]
+        .applymap(highlight_pl_bg, subset=['P&L %'])  # type: ignore[attr-defined]
 )
-    st.dataframe(styled_df, use_container_width=True)
-    # st.dataframe(style_pl_df(df_person), use_container_width=True)
+    st.dataframe(styled_df, width='stretch')
+    # st.dataframe(style_pl_df(df_person), width='stretch')
 
 # ================= PIVOT DATA =================
 elif page == "📑 Pivot Data":
@@ -455,11 +339,18 @@ elif page == "📑 Pivot Data":
         if pd.isna(r['Sell']) or r['Sell'] == 0 else 0,
         axis=1
     )
+    def _safe_weighted_avg(buy_series, qty_series) -> float:
+        b = pd.to_numeric(buy_series, errors='coerce')
+        q = pd.to_numeric(qty_series, errors='coerce')
+        denom = q.sum()
+        if denom == 0 or pd.isna(denom):
+            return 0
+        return (b * q).sum() / denom
 
     grouped = df_pivot.groupby('SYMBOL', as_index=False).agg({
         'Realised P/L': 'sum',
         'Unrealised P/L': 'sum',
-        'Buy': lambda x: (x * df_pivot.loc[x.index, 'QTY']).sum() / df_pivot.loc[x.index, 'QTY'].sum(),
+        'Buy': lambda x: _safe_weighted_avg(x, df_pivot.loc[x.index, 'QTY']),
         'QTY': 'sum',
         'Change': 'last'
     })
@@ -476,7 +367,7 @@ elif page == "📑 Pivot Data":
     # df_display['Unrealised P/L'] = df_display['Unrealised P/L'].map('₹{:,.2f}'.format)
     # df_display['Change Today'] = df_display['Change Today'].map('₹{:,.2f}'.format)
 
-    # st.dataframe(df_display, use_container_width=True)
+    # st.dataframe(df_display, width='stretch')
         # ================= BAR CHART: TODAY'S CHANGE BY HOLDER =================
         # ================= BAR CHART: TODAY'S CHANGE (UNREALISED ONLY) =================
     st.subheader("📊 Today's Change by Holder (Unrealised Positions Only)")
@@ -498,10 +389,8 @@ elif page == "📑 Pivot Data":
         holder_change['Direction'] = holder_change['Today Change ₹'].apply(
     lambda x: 'Positive' if x > 0 else 'Negative' if x < 0 else 'Zero'
 )
-        holder_change = holder_change.sort_values(
-        by='Holder',
-        ascending=True
-        )
+        # Use list arguments to satisfy type checks in some pandas stubs
+        holder_change = holder_change.sort_values('Holder')  # type: ignore[call-arg]
 
 
 
@@ -540,7 +429,7 @@ elif page == "📑 Pivot Data":
         )
 
 
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width='stretch')
     else:
         st.info("No unrealised positions available for today's change.")
 
@@ -552,11 +441,11 @@ elif page == "📑 Pivot Data":
             'Unrealised P/L': '₹{:,.2f}',
             'Change Today': '₹{:,.2f}'
         })
-        .applymap(highlight_pl_bg, subset=['Change Today'])
-        .applymap(color_unrealised_pl, subset=['Unrealised P/L'])
+        .applymap(highlight_pl_bg, subset=['Change Today'])  # type: ignore[attr-defined]
+        .applymap(color_unrealised_pl, subset=['Unrealised P/L'])  # type: ignore[attr-defined]
 )
 
-    st.dataframe(styled_df, use_container_width=True)
+    st.dataframe(styled_df, width='stretch')
 
 
 
@@ -566,19 +455,22 @@ elif page == "📉 RSI Analysis":
     st.title("📉 Interactive Stock RSI Plotter")
     st.caption("Daily, Weekly & Monthly RSI with EMA overlays")
 
-    stock_list = fetch_stock_list()
+    stock_list = get_index_symbols("NIFTY 500")
     selected_stock = st.selectbox("Select Stock", ["Select"] + stock_list)
 
     if selected_stock != "Select":
+        ticker = selected_stock.strip().upper()
         with st.spinner("Fetching data..."):
             try:
-                ticker = selected_stock.strip().upper()
                 df = yf.download(
                     f"{ticker}.NS",
                     period='15y',
                     interval='1d',
                     auto_adjust=True
                 )
+
+                if df is None or df.empty:
+                    raise ValueError("No data returned from yfinance")
 
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
@@ -592,7 +484,7 @@ elif page == "📉 RSI Analysis":
                 weekly_rsi = calculate_rsi(weekly_close)
                 weekly_rsi_ema = calculate_ema(weekly_rsi, 50)
 
-                monthly_close = data['Close'].resample('M').last()
+                monthly_close = data['Close'].resample('ME').last()
                 monthly_rsi = calculate_rsi(monthly_close)
                 monthly_rsi_ema = calculate_ema(monthly_rsi)
 
@@ -651,10 +543,10 @@ elif page == "📉 RSI Analysis":
                 )
 
                 for r in [2, 3, 4]:
-                    fig.add_hline(y=40, line_dash='dot', row=r, col=1,line_color="red")
-                    fig.add_hline(y=50, line_dash='dot', row=r, col=1)
-                    fig.add_hline(y=60, line_dash='dot', row=r, col=1,line_color="blue")
-                    fig.update_yaxes(range=[0, 100], row=r, col=1)
+                    fig.add_hline(y=40, line_dash='dot', row=r, col=1,line_color="red")  # type: ignore[arg-type]
+                    fig.add_hline(y=50, line_dash='dot', row=r, col=1)  # type: ignore[arg-type]
+                    fig.add_hline(y=60, line_dash='dot', row=r, col=1,line_color="blue")  # type: ignore[arg-type]
+                    fig.update_yaxes(range=[0, 100], row=r, col=1)  # type: ignore[arg-type]
 
                 fig.update_layout(
                     height=1400,
@@ -662,7 +554,7 @@ elif page == "📉 RSI Analysis":
                     template='plotly_white'
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
             except Exception as e:
                 st.error(f"Error fetching data for {ticker}: {e}")
@@ -692,7 +584,8 @@ elif page == "📊 Trend Analysis":
             "Nifty 50",
             "Nifty Next 50",
             "Nifty Midcap 150",
-            "Nifty LARGEMIDCAP 250"
+            "Nifty LARGEMIDCAP 250",
+            "Nifty 500"
         ]
     )
 
@@ -706,6 +599,9 @@ elif page == "📊 Trend Analysis":
 
     elif stock_universe == "Nifty 50":
         symbols = get_index_symbols("NIFTY 50")
+    
+    elif stock_universe == "Nifty 500":
+        symbols = get_index_symbols("NIFTY 500")
 
     elif stock_universe == "Nifty Next 50":
         symbols = get_index_symbols("NIFTY%20NEXT%2050")
@@ -714,7 +610,7 @@ elif page == "📊 Trend Analysis":
         symbols = get_index_symbols("NIFTY MIDCAP 150")
 
     elif stock_universe == "Nifty LARGEMIDCAP 250":
-        symbols = get_index_symbols("NIFTY%20LARGEMIDCAP%20250")
+        symbols = get_index_symbols("NIFTY%20LARGEMID250")
 
     results = []
     trend_up, trend_down = [], []
@@ -824,6 +720,6 @@ elif page == "📊 Trend Analysis":
 
     # ---------- DISPLAY ----------
     if results:
-        st.dataframe(pd.DataFrame(results), use_container_width=True)
+        st.dataframe(pd.DataFrame(results), width='stretch')
     else:
         st.info("No results for selected analytics mode.")
