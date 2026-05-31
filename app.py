@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
+from pandas.io.formats.style import Styler
 from typing import Dict, List, Optional
 
 from ui import (
@@ -52,7 +53,7 @@ def portfolio_summary(df: pd.DataFrame):
     return invested, current, profit
 
 
-def styled_financial_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+def styled_financial_table(df: pd.DataFrame) -> Styler:
     def existing_columns(columns):
         return [col for col in columns if col in df.columns]
 
@@ -207,7 +208,7 @@ if page == 'Home':
 
     render_section_header('Open Positions', 'Detailed view of your active equity portfolio.')
     open_positions = portfolio_df.sort_values('Current', ascending=False)
-    st.dataframe(styled_financial_table(open_positions), width='stretch')
+    st.write(styled_financial_table(open_positions))
 
 elif page == 'Portfolio':
     page_header('Holder Portfolio Detail', 'Inspect a single holder, their allocation and performance metrics.')
@@ -238,7 +239,7 @@ elif page == 'Portfolio':
     holder_df_display = holder_df.assign(**{
         'Buy Date': holder_df['Buy Date'].dt.strftime('%Y-%m-%d'),
     })
-    st.dataframe(styled_financial_table(holder_df_display), width='stretch')
+    st.write(styled_financial_table(holder_df_display))
 
 elif page == 'Pivot Data':
     page_header('Pivot Data Explorer', 'Compare holdings and change summaries across the full dataset.')
@@ -296,7 +297,7 @@ elif page == 'Pivot Data':
         st.info('No unrealised positions available for today.')
 
     render_section_header('Pivot Table', 'See the aggregated holding analytics for each symbol.')
-    st.dataframe(styled_financial_table(grouped), width='stretch')
+    st.write(styled_financial_table(grouped))
 
 elif page == 'RSI Analysis':
     page_header('RSI Analysis', 'Explore RSI momentum with daily, weekly and monthly signals.')
