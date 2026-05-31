@@ -68,8 +68,8 @@ def styled_financial_table(df: pd.DataFrame) -> Styler:
         'Unrealised P/L': '₹{:,.2f}',
         'Change Today': '₹{:,.2f}',
     })
-    styled = styled.applymap(color_unrealised_pl, subset=existing_columns(['P&L', 'Realised P/L', 'Unrealised P/L']))  # type: ignore[attr-defined]
-    styled = styled.applymap(highlight_pl_bg, subset=existing_columns(['P&L', 'P&L %', 'Realised P/L', 'Unrealised P/L', 'Change Today']))  # type: ignore[attr-defined]
+    styled = styled.map(color_unrealised_pl, subset=existing_columns(['P&L', 'Realised P/L', 'Unrealised P/L']))
+    styled = styled.map(highlight_pl_bg, subset=existing_columns(['P&L', 'P&L %', 'Realised P/L', 'Unrealised P/L', 'Change Today']))
     return styled
 
 
@@ -194,7 +194,7 @@ if page == 'Home':
     c1, c2 = st.columns([2, 1])
     with c1:
         render_section_header('Portfolio Allocation', 'Visualize current unrealized portfolio value by stock.')
-        st.plotly_chart(portfolio_pie_by_stocks(portfolio_df), use_container_width=True)
+        st.plotly_chart(portfolio_pie_by_stocks(portfolio_df), width='stretch')
     with c2:
         render_section_header('Top Holdings', 'Current value ranking for your largest positions.')
         top_holdings = (
@@ -231,9 +231,9 @@ elif page == 'Portfolio':
 
     view = st.radio('Chart view', ['Allocation', 'Trend'], horizontal=True)
     if view == 'Allocation':
-        st.plotly_chart(portfolio_treemap(holder_df), use_container_width=True)
+        st.plotly_chart(portfolio_treemap(holder_df), width='stretch')
     else:
-        st.plotly_chart(portfolio_pie_by_stocks(holder_df), use_container_width=True)
+        st.plotly_chart(portfolio_pie_by_stocks(holder_df), width='stretch')
 
     render_section_header('Position Details', 'Review buy dates, LTP, invested amount and unrealized P&L.')
     holder_df_display = holder_df.assign(**{
@@ -292,7 +292,7 @@ elif page == 'Pivot Data':
         )
         fig.update_traces(texttemplate='₹ %{text:,.2f}', textposition='inside')
         fig.update_layout(height=460, xaxis_tickangle=-30)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info('No unrealised positions available for today.')
 
@@ -352,7 +352,7 @@ elif page == 'RSI Analysis':
                     fig.update_yaxes(range=[0, 100], row=row_id, col=1)  # type: ignore[arg-type]
 
                 fig.update_layout(height=1400, hovermode='x unified', template='plotly_white')
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             except Exception as exc:
                 st.error(f'Unable to load RSI data for {ticker}: {exc}')
 
